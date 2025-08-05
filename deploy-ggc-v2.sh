@@ -278,6 +278,23 @@ EOF
 get_public_key() {
     echo ""
     log_step "配置SSH密钥登录"
+    
+    # 检查并处理现有的authorized_keys文件
+    if [[ -f /home/ggcuser/.ssh/authorized_keys ]] && [[ -s /home/ggcuser/.ssh/authorized_keys ]]; then
+        log_warn "检测到 /home/ggcuser/.ssh/authorized_keys 文件已存在且包含内容"
+        log_info "正在清空原有文件内容..."
+        > /home/ggcuser/.ssh/authorized_keys
+        log_info "原有文件内容已清空"
+    fi
+    
+    if [[ -f /root/.ssh/authorized_keys ]] && [[ -s /root/.ssh/authorized_keys ]]; then
+        log_warn "检测到 /root/.ssh/authorized_keys 文件已存在且包含内容"
+        log_info "正在清空原有文件内容..."
+        > /root/.ssh/authorized_keys
+        log_info "原有文件内容已清空"
+    fi
+    
+    echo ""
     echo "请输入你的SSH公钥（通常以ssh-rsa开头）:"
     read -r PUBLIC_KEY
     
@@ -479,6 +496,7 @@ main() {
     check_root
     
     # 获取用户输入
+    get_public_key
     get_ssh_port
     get_ip_priority
     get_ip_disable
