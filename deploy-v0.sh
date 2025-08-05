@@ -1,4 +1,4 @@
-#密钥登录   禁止密码登录(不重写文件)   改变端口   BBR   fail2ban安装启用   IPV4优先   IPV6禁用     在deploy-cg-v4.sh基础上增加IPv4/IPv6优先级配置;IPv4/IPv6禁用配置
+#密钥登录   禁止密码登录(不重写文件)   改变端口   BBR   fail2ban安装启用   在deploy-cg-v4.sh基础上增加IPv4/IPv6优先级配置;IPv4/IPv6禁用配置
 
 #!/bin/bash
 
