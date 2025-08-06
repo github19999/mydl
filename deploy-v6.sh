@@ -1,3 +1,5 @@
+#修复fail2ban的问题
+
 #!/bin/bash
 
 # 颜色定义
