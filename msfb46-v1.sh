@@ -1,10 +1,93 @@
 #!/bin/bash
 
-# ================================================
-#   服务器安全配置一键部署脚本 v2.0
-#   兼容：Ubuntu 18/20/22/24, Debian 10/11/12,
-#         CentOS/RHEL 7/8/9, AlmaLinux, Rocky Linux
-# ================================================
+# ================================================================
+#   服务器安全配置一键部署脚本 v2.1
+# ================================================================
+#
+#   【脚本用途】
+#   用于在全新 Linux 服务器上快速完成安全加固与基础环境初始化，
+#   避免手动逐条执行命令导致的遗漏或配置错误。
+#
+#   【适用系统】
+#   - Ubuntu 18 / 20 / 22 / 24
+#   - Debian 10 / 11 / 12
+#   - CentOS 7 / 8 / 9
+#   - RHEL 7 / 8 / 9
+#   - AlmaLinux 8 / 9
+#   - Rocky Linux 8 / 9
+#
+#   【执行顺序】
+#   1. 检查 root 权限
+#   2. 预装基础组件（apt/dnf/yum 自动识别）
+#      - apt update
+#      - 安装 curl sudo wget git unzip nano vim
+#   3. 检测发行版与包管理器
+#   4. 收集用户配置（交互式输入）
+#   5. 安装 fail2ban
+#   6. 启用 BBR 拥塞控制加速
+#   7. 设置 IP 协议优先级（gai.conf）
+#   8. 禁用指定 IP 协议（sysctl.d）
+#   9. 配置 SSH 密钥登录
+#  10. 加固 SSH 配置
+#  11. 配置并启动 fail2ban
+#  12. 重启 SSH 服务并验证
+#
+#   【功能说明】
+#
+#   ── SSH 密钥登录 ──────────────────────────────────────────
+#   · 将用户提供的公钥追加写入 /root/.ssh/authorized_keys
+#   · 自动设置 .ssh 目录及文件的正确权限（700 / 600）
+#   · 显式启用 PubkeyAuthentication 和 AuthorizedKeysFile，
+#     防止部分系统因默认未写该参数导致密钥登录失效
+#   · 在 CentOS/RHEL 上自动执行 restorecon 修复 SELinux 上下文
+#
+#   ── 禁用密码登录 ──────────────────────────────────────────
+#   · 同时禁用三项相关参数，全面封堵密码登录旁路：
+#     - PasswordAuthentication no
+#     - ChallengeResponseAuthentication no（旧版 SSH 兼容名）
+#     - KbdInteractiveAuthentication no（新版 SSH 名称）
+#   · 修改采用精确替换方式，不覆盖 sshd_config 原文件，
+#     修改前自动备份（带时间戳）
+#
+#   ── 修改 SSH 端口 ─────────────────────────────────────────
+#   · 注释原有端口配置，追加新端口，默认 43916
+#   · 修改前执行 sshd -t 语法检查，失败则中止并提示备份位置
+#   · 自动兼容 sshd / ssh 两种系统服务名
+#
+#   ── BBR 拥塞控制 ──────────────────────────────────────────
+#   · 检测内核版本（需 4.9+）及当前是否已启用，避免重复写入
+#   · 写入 net.core.default_qdisc=fq 和
+#     net.ipv4.tcp_congestion_control=bbr 到 /etc/sysctl.conf
+#   · 立即执行 sysctl -p 使配置生效
+#
+#   ── IP 协议优先级 ─────────────────────────────────────────
+#   · 修改 /etc/gai.conf 中的 precedence 行
+#   · IPv4 优先：取消注释或追加 precedence ::ffff:0:0/96 100
+#   · IPv6 优先：注释该行，让系统回退默认（IPv6 优先）
+#   · 修改前自动备份原文件（带时间戳）
+#
+#   ── IP 协议禁用 ───────────────────────────────────────────
+#   · 写入独立文件 /etc/sysctl.d/99-disable-ipv6.conf，
+#     不污染 /etc/sysctl.conf 主文件
+#   · 禁用 IPv4 为危险操作，需二次确认后方可执行
+#   · 默认选项为"保持不变"，防止误操作断连
+#
+#   ── fail2ban ──────────────────────────────────────────────
+#   · 自动检测日志后端：systemd-journald 可用则用 systemd，
+#     否则回退 auto 并自动查找 /var/log/auth.log 或 /var/log/secure
+#   · 写入 /etc/fail2ban/jail.local 配置：
+#     SSH 端口监控、maxretry=1、bantime=-1（永久封禁）
+#   · 先停止服务再写配置，避免文件锁冲突
+#   · 安装或启动失败只打警告，不中止整体流程
+#
+#   【注意事项】
+#   · 必须以 root 身份运行
+#   · 执行完成后，请先开新终端用密钥测试 SSH 连接，
+#     确认可正常登录后再断开当前会话
+#   · 脚本不配置防火墙，请手动放行新 SSH 端口
+#   · 所有被修改的配置文件均会在同目录生成带时间戳的备份
+#
+# ================================================================
 
 # 颜色定义
 RED='\033[0;31m'
@@ -145,29 +228,17 @@ get_ip_disable() {
 }
 
 # ------------------------------------------------
-# 安装基础软件（跨发行版）
+# 补装 fail2ban（基础包已由 bootstrap_packages 完成）
 # ------------------------------------------------
 install_basics() {
-    log_step "更新系统并安装基础软件"
+    log_step "安装 fail2ban"
 
     if [[ "$PKG_MANAGER" == "apt" ]]; then
-        apt update -y
-        # 【改动】fail2ban 单独安装，失败不阻塞主流程
-        apt install -y curl sudo wget git unzip nano vim || {
-            log_error "基础软件安装失败"; exit 1
-        }
-        apt install -y fail2ban || log_warn "fail2ban 安装失败，将在后续步骤中重试"
-
+        apt install -y fail2ban || log_warn "fail2ban 安装失败，将在 setup_fail2ban 中重试"
     elif [[ "$PKG_MANAGER" =~ ^(yum|dnf)$ ]]; then
-        $PKG_MANAGER update -y
-        $PKG_MANAGER install -y curl sudo wget git unzip nano vim epel-release || {
-            log_error "基础软件安装失败"; exit 1
-        }
-        # EPEL 仓库安装后再装 fail2ban
+        # EPEL 已在 bootstrap 阶段装好，直接装 fail2ban
         $PKG_MANAGER install -y fail2ban || log_warn "fail2ban 安装失败，请手动安装后重新运行 setup_fail2ban"
     fi
-
-    log_info "基础软件安装完成"
 }
 
 # ------------------------------------------------
@@ -505,17 +576,52 @@ show_summary() {
 }
 
 # ------------------------------------------------
+# 预装基础组件（最优先执行，不依赖任何函数）
+# 确保后续步骤所需的 curl/wget/git 等工具可用
+# ------------------------------------------------
+bootstrap_packages() {
+    log_step "预装基础组件"
+
+    if command -v apt &>/dev/null; then
+        apt update -y
+        apt install -y curl sudo wget git unzip nano vim
+    elif command -v dnf &>/dev/null; then
+        dnf install -y epel-release 2>/dev/null || true
+        dnf install -y curl sudo wget git unzip nano vim
+    elif command -v yum &>/dev/null; then
+        yum install -y epel-release 2>/dev/null || true
+        yum install -y curl sudo wget git unzip nano vim
+    else
+        log_warn "未检测到已知包管理器（apt/dnf/yum），跳过预装"
+        return
+    fi
+
+    if [[ $? -eq 0 ]]; then
+        log_info "基础组件预装完成"
+    else
+        log_error "基础组件安装失败，请检查网络或软件源后重试"
+        exit 1
+    fi
+}
+
+# ------------------------------------------------
 # 主流程
 # ------------------------------------------------
 main() {
     echo "================================================"
-    echo "    服务器安全配置一键部署脚本 v2.0"
+    echo "    服务器安全配置一键部署脚本 v2.1"
     echo "================================================"
     echo ""
 
+    # 第一步：权限检查 + 立即预装基础组件
+    # 在任何用户交互和发行版检测之前完成，确保环境就绪
     check_root
+    bootstrap_packages
+
+    # 第二步：检测发行版（此时 curl/wget 已可用）
     detect_distro
 
+    # 第三步：收集用户配置
     get_public_key
     get_ssh_port
     get_ip_priority
@@ -525,6 +631,7 @@ main() {
     log_info "开始执行配置，请稍候..."
     echo ""
 
+    # install_basics 现在只需补装 fail2ban（基础包已在 bootstrap 装好）
     install_basics
     enable_bbr
     set_ip_priority
